@@ -9,6 +9,10 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+from worker import worker_bp
+
+app.register_blueprint(worker_bp)
+
 @app.route("/health")
 def health():
     return jsonify(status="ok")
