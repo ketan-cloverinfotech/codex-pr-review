@@ -1,0 +1,204 @@
+name: Codex PR Review
+
+# Run on PR open, reopen, new pushes, and draft→ready. Skip drafts.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+# Cancel an in-flight review when a newer commit lands on the same PR
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Don't waste tokens reviewing drafts
+    if: ${{ github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read          # read repo files
+      pull-requests: write     # post review comments
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      MIN_CONF: ${{ vars.CODEX_MIN_CONFIDENCE || '0.7' }}
+    steps:
+      # Check out the PR merge commit with full history (needed for a clean diff)
+      - name: Checkout PR merge ref
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Make sure both ends of the diff are available locally
+      - name: Fetch base and head
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "${{ github.event.pull_request.base.ref }}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head"
+
+      # Define the JSON shape Codex must return (path + line range per finding)
+      - name: Write output schema
+        run: |
+          cat > codex-output-schema.json <<'JSON'
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["findings","overall_correctness","overall_explanation","overall_confidence_score"],
+            "properties": {
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["title","body","confidence_score","priority","code_location"],
+                  "properties": {
+                    "title": { "type": "string", "maxLength": 80 },
+                    "body": { "type": "string", "minLength": 1 },
+                    "confidence_score": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
+                    "code_location": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["absolute_file_path","line_range"],
+                      "properties": {
+                        "absolute_file_path": { "type": "string", "minLength": 1 },
+                        "line_range": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["start","end"],
+                          "properties": {
+                            "start": { "type": "integer", "minimum": 1 },
+                            "end": { "type": "integer", "minimum": 1 }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "overall_correctness": { "type": "string", "enum": ["patch is correct","patch is incorrect"] },
+              "overall_explanation": { "type": "string", "minLength": 1 },
+              "overall_confidence_score": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+          JSON
+
+      # Build the prompt: review instructions + PR metadata + the actual diff
+      - name: Build prompt
+        run: |
+          set -euo pipefail
+          cp .github/codex/prompts/review.md codex-prompt.md
+          {
+            echo ""
+            echo "Repository: ${REPO}"
+            echo "PR #: ${PR}"
+            echo "Base SHA: ${BASE_SHA}"
+            echo "Head SHA: ${HEAD_SHA}"
+            echo ""
+            echo "Changed files:"
+            git --no-pager diff --name-status "${BASE_SHA}" "${HEAD_SHA}"
+            echo ""
+            echo "Unified diff (context=5):"
+            git --no-pager diff --unified=5 "${BASE_SHA}" "${HEAD_SHA}"
+          } >> codex-prompt.md
+
+      # Run Codex read-only; emit structured JSON validated against the schema
+      - name: Run Codex
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: codex-prompt.md
+          output-schema-file: codex-output-schema.json
+          output-file: codex-output.json
+          sandbox: read-only
+          model: ${{ vars.CODEX_MODEL || 'gpt-5.5' }}
+
+      # Debug: dump the structured result into the job log
+      - name: Inspect output
+        if: ${{ always() }}
+        run: '[ -s codex-output.json ] && jq . codex-output.json || echo "no output"'
+
+      # Post each finding above the confidence bar to its exact line.
+      # Lines GitHub rejects (not in the diff) are stashed for the summary.
+      - name: Publish inline comments
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          [ -s codex-output.json ] || { echo "no output"; exit 0; }
+          : > /tmp/unanchored.jsonl
+          jq -c --argjson min "$MIN_CONF" \
+            '.findings[] | select(.confidence_score >= $min)' codex-output.json \
+          | while IFS= read -r f; do
+              payload=$(echo "$f" | jq -c --arg c "$HEAD_SHA" '{
+                body: (.title + "\n\n" + .body + "\n\n_Confidence: " + (.confidence_score|tostring) + " · Priority: P" + (.priority|tostring) + "_"),
+                commit_id: $c,
+                path: .code_location.absolute_file_path,
+                line: .code_location.line_range.end,
+                side: "RIGHT",
+                start_line: (if .code_location.line_range.start != .code_location.line_range.end then .code_location.line_range.start else null end),
+                start_side: (if .code_location.line_range.start != .code_location.line_range.end then "RIGHT" else null end)
+              } | with_entries(select(.value != null))')
+              code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${REPO}/pulls/${PR}/comments" \
+                -d "$payload")
+              if [ "$code" = "201" ]; then
+                echo "posted: $(echo "$f" | jq -r '.title')"
+              else
+                echo "could not anchor (HTTP $code): $(echo "$f" | jq -r '.title')"
+                echo "$f" >> /tmp/unanchored.jsonl
+              fi
+            done
+
+      # One summary comment: verdict, confidence, and any findings that couldn't anchor
+      - name: Publish summary
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          [ -s codex-output.json ] || exit 0
+          verdict=$(jq -r '.overall_correctness' codex-output.json)
+          conf=$(jq -r '.overall_confidence_score' codex-output.json)
+          expl=$(jq -r '.overall_explanation' codex-output.json)
+          body="## 🤖 Codex review
+
+          **Verdict:** ${verdict} (confidence ${conf})
+
+          ${expl}"
+          if [ -s /tmp/unanchored.jsonl ]; then
+            extra=$(jq -r '"- **" + .title + "** (`" + .code_location.absolute_file_path + ":" + (.code_location.line_range.start|tostring) + "`) — " + .body' /tmp/unanchored.jsonl)
+            body="${body}
+
+          <details><summary>Findings not placed inline</summary>
+
+          ${extra}
+          </details>"
+          fi
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/issues/${PR}/comments" \
+            -d "$(jq -n --arg b "$body" '{body:$b}')"
+
+      # Optional hard gate: fail the check if Codex is confident the patch is wrong.
+      # Toggle by setting repo variable CODEX_BLOCK_ON_INCORRECT=true.
+      - name: Enforce verdict gate
+        if: ${{ vars.CODEX_BLOCK_ON_INCORRECT == 'true' }}
+        run: |
+          set -euo pipefail
+          verdict=$(jq -r '.overall_correctness' codex-output.json)
+          conf=$(jq -r '.overall_confidence_score' codex-output.json)
+          if [ "$verdict" = "patch is incorrect" ] && awk -v c="$conf" 'BEGIN{exit !(c>=0.8)}'; then
+            echo "::error::Codex flagged this patch as incorrect (confidence ${conf})"
+            exit 1
+          fi
+          echo "Gate passed (verdict: ${verdict}, confidence: ${conf})"
