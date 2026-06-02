@@ -5,10 +5,9 @@ import subprocess
 import requests
 from flask import Flask, request, jsonify
 
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+app = Flask(__name__) logging.basicConfig(level=logging.INFO)
 
-
+@logout
 from worker import worker_bp
 
 app.register_blueprint(worker_bp)
