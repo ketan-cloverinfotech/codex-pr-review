@@ -1,0 +1,4 @@
+flask
+requests
+pyjwt
+bcrypt
