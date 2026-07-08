@@ -13,4 +13,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: echoning hello
-        run: echo "Hello-word"
+        run: echo "Hello-word version ${{env.APP_VERSION}} also from ${{env.FROM}}"
