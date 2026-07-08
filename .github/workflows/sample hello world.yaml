@@ -11,4 +11,4 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
     - name: echo env
-      run: "echoing helow from ${{env.PROD_ID}} and version is ${{env.VERSION}} "  
+      run: echo "helow from ${{env.PROD_ID}} and version is ${{env.VERSION}}"  
