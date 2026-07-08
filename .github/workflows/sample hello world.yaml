@@ -1,0 +1,16 @@
+name: sample hello world
+on:
+  push:
+    branch:
+      - main
+  workflow_dispatch:
+env:
+  APP_VERSION: v1
+  FROM: Ketan 
+jobs: 
+  echo_hello:
+    name: echoing hellow
+    runs-on: ubuntu-latest
+    steps:
+      - name: echoning hello
+        run: echo "Hello-word"
