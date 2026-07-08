@@ -1,16 +1,14 @@
-name: sample hello world
-on:
-  push:
-    branch:
+name: GitHub pipeline
+on: 
+  push: 
+    branch: 		
       - main
-  workflow_dispatch:
-env:
-  APP_VERSION: v1
-  FROM: Ketan 
-jobs: 
-  echo_hello:
-    name: echoing hellow
-    runs-on: ubuntu-latest
+env:	
+  PROD_ID: 3
+  VERSION: 3
+jobs:	
+  echo-hello-words:
+    runs-on: "ubuntu-latest"
     steps:
-      - name: echoning hello
-        run: echo "Hello-word version ${{env.APP_VERSION}} also from ${{env.FROM}}"
+    - name: echo env
+      run: "echoing helow from ${{env.PROD_ID}} and version is ${{env.VERSION}} "  
