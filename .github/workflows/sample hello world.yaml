@@ -7,8 +7,14 @@ env:
   APP_NAME: "jfld"
   VERSION: "4.67"
 jobs:
-  create_the_message:
+  build:
     runs-on: ubuntu-latest
     steps:
     - name: Echo the command
-      run: echo "we are eching the message ${{env.APP_NAME}} and version ${{env.VERSION}}"
+      run: echo "we are building the application ${{.env.APP_NAME}} and version ${{env.VERSION}}"
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploying to k8s
+        run: echo "deploying to k8s"
+   
