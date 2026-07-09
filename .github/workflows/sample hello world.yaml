@@ -1,14 +1,14 @@
-name: GitHub pipeline
+name: Echo only
 on: 
-  push: 
-    branch: 		
-      - main
-env:	
-  PROD_ID: 3
-  VERSION: 3
-jobs:	
-  echo-hello-words:
-    runs-on: "ubuntu-latest"
+ push: 
+   branches:
+   - main
+env: 
+  APP_NAME: jfld
+  VERSION: 4.67
+jobs:
+  create_the_message:
+    runs-on: ubuntu-latest
     steps:
-    - name: echo env
-      run: echo "helow from ${{env.PROD_ID}} and version is ${{env.VERSION}}"  
+    - name: Echo the command
+      run: echo "we are eching the message ${{env.APP_NAME}} and version ${{env.VERSION}}"
