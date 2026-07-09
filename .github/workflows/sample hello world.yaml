@@ -4,8 +4,8 @@ on:
    branches:
    - main
 env: 
-  APP_NAME: jfld
-  VERSION: 4.67
+  APP_NAME: "jfld"
+  VERSION: "4.67"
 jobs:
   create_the_message:
     runs-on: ubuntu-latest
